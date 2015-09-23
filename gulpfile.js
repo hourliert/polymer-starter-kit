@@ -100,6 +100,17 @@ gulp.task('elements', function () {
   return styleTask('elements', ['**/*.css']);
 });
 
+// Transpile all JS to ES5.
+gulp.task('js', function () {
+  return gulp.src(['app/**/*.{js,html}'])
+    .pipe($.sourcemaps.init())
+    .pipe($.if('*.html', $.crisper())) // Extract JS from .html files
+    .pipe($.if('*.js', $.babel()))
+    .pipe($.sourcemaps.write('.'))
+    .pipe(gulp.dest('.tmp/'))
+    .pipe(gulp.dest('dist/'));
+});
+
 // Lint JavaScript
 gulp.task('jshint', function () {
   return jshintTask([
@@ -161,9 +172,28 @@ gulp.task('fonts', function () {
 
 // Scan your HTML for assets & optimize them
 gulp.task('html', function () {
-  return optimizeHtmlTask(
-    ['app/**/*.html', '!app/{elements,test}/**/*.html'],
-    'dist');
+  var assets = $.useref.assets({searchPath: ['.tmp', 'dist']});
+
+  return gulp.src(['app/**/*.html', '!app/{elements,test}/**/*.html'])
+    // Replace path for vulcanized assets
+    .pipe($.if('*.html', $.replace('elements/elements.html', 'elements/elements.vulcanized.html')))
+    .pipe(assets)
+    // Concatenate and minify JavaScript
+    .pipe($.if('*.js', $.uglify({preserveComments: 'some'})))
+    // Concatenate and minify styles
+    // In case you are still using useref build blocks
+    .pipe($.if('*.css', $.cssmin()))
+    .pipe(assets.restore())
+    .pipe($.useref())
+    // Minify any HTML
+    .pipe($.if('*.html', $.minifyHtml({
+      quotes: true,
+      empty: true,
+      spare: true
+    })))
+    // Output files
+    .pipe(gulp.dest('dist'))
+    .pipe($.size({title: 'html'}));
 });
 
 // Vulcanize granular configuration
@@ -216,7 +246,7 @@ gulp.task('clean', function (cb) {
 });
 
 // Watch files for changes & reload
-gulp.task('serve', ['styles', 'elements', 'images'], function () {
+gulp.task('serve', ['styles', 'elements', 'images', 'js'], function () {
   browserSync({
     port: 5000,
     notify: false,
@@ -242,10 +272,10 @@ gulp.task('serve', ['styles', 'elements', 'images'], function () {
     }
   });
 
-  gulp.watch(['app/**/*.html'], reload);
+  gulp.watch(['app/**/*.html'], ['js', reload]);
   gulp.watch(['app/styles/**/*.css'], ['styles', reload]);
   gulp.watch(['app/elements/**/*.css'], ['elements', reload]);
-  gulp.watch(['app/{scripts,elements}/**/{*.js,*.html}'], ['jshint']);
+  gulp.watch(['app/{scripts,elements}/**/*.js'], ['jshint', 'js']);
   gulp.watch(['app/images/**/*'], reload);
 });
 
@@ -277,7 +307,7 @@ gulp.task('default', ['clean'], function (cb) {
   // Uncomment 'cache-config' if you are going to use service workers.
   runSequence(
     ['copy', 'styles'],
-    'elements',
+    ['elements', 'js'],
     ['jshint', 'images', 'fonts', 'html'],
     'vulcanize', // 'cache-config',
     cb);
@@ -289,3 +319,22 @@ require('web-component-tester').gulp.init(gulp);
 
 // Load custom tasks from the `tasks` directory
 try { require('require-dir')('tasks'); } catch (err) {}
+
+function inc(importance) {
+  // get all the files to bump version in
+  return gulp.src(['./package.json', './bower.json'])
+    // bump the version number in those files
+    .pipe($.bump({type: importance}))
+    // save it back to filesystem
+    .pipe(gulp.dest('./'))
+    // commit the changed version number
+    .pipe($.git.commit('Bumps package version for ' + importance + 'release.'))
+    // read only one file to get the version number
+    .pipe($.filter('bower.json'))
+    // **tag it in the repository**
+    .pipe($.tagVersion());
+}
+
+gulp.task('patch', function() { return inc('patch'); });
+gulp.task('feature', function() { return inc('minor'); });
+gulp.task('release', function() { return inc('major'); });
